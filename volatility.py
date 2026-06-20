@@ -19,9 +19,13 @@ correlated but can diverge significantly, especially around known events
 for a first screening pass, not as the definitive figure on which to
 base a decision.
 """
+from datetime import date as _date
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+from options_analysis import black_scholes_greeks as _bs_greeks
 
 
 def realized_vol_percentile(price_df: pd.DataFrame, window: int = 20) -> dict:
@@ -93,17 +97,26 @@ def fetch_atm_iv_snapshot(ticker: str, max_expiries: int = 2) -> list:
         atm_call = calls.sort_values("dist").iloc[0]
         atm_put = puts.sort_values("dist").iloc[0]
 
+        iv_call_pct = round(float(atm_call["impliedVolatility"]) * 100, 1)
+        iv_put_pct  = round(float(atm_put["impliedVolatility"]) * 100, 1)
+        strike      = float(atm_call["strike"])
+        dte         = max((_date.fromisoformat(exp) - _date.today()).days, 1)
+        T           = dte / 365
+
         results.append({
             "expiry": exp,
             "spot": round(float(spot), 2),
-            "strike_atm": float(atm_call["strike"]),
-            "iv_call_pct": round(float(atm_call["impliedVolatility"]) * 100, 1),
-            "iv_put_pct": round(float(atm_put["impliedVolatility"]) * 100, 1),
+            "strike_atm": strike,
+            "iv_call_pct": iv_call_pct,
+            "iv_put_pct":  iv_put_pct,
+            "skew_pct": round(iv_put_pct - iv_call_pct, 1),
             "volume_call": int(atm_call["volume"]) if pd.notna(atm_call["volume"]) else 0,
-            "volume_put": int(atm_put["volume"]) if pd.notna(atm_put["volume"]) else 0,
+            "volume_put":  int(atm_put["volume"])  if pd.notna(atm_put["volume"])  else 0,
             "bid_call": float(atm_call["bid"]),
             "ask_call": float(atm_call["ask"]),
-            "bid_put": float(atm_put["bid"]),
-            "ask_put": float(atm_put["ask"]),
+            "bid_put":  float(atm_put["bid"]),
+            "ask_put":  float(atm_put["ask"]),
+            "greeks_call": _bs_greeks(float(spot), strike, T, iv_call_pct, option_type="call"),
+            "greeks_put":  _bs_greeks(float(spot), strike, T, iv_put_pct,  option_type="put"),
         })
     return results
