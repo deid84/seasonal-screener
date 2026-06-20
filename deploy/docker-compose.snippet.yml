@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Snippet to ADD to your existing docker-compose.yml
+#
+# 1. Copy the service block below into your docker-compose services: section.
+# 2. Copy the volume block into your top-level volumes: section.
+# 3. Replace "proxy" with the Docker network name your nginx already uses.
+# 4. Set TICKERS to the list you want screened nightly.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  py-screener:
+    build:
+      context: ./py-screener          # path relative to your docker-compose.yml
+      dockerfile: Dockerfile
+    container_name: py-screener
+    restart: always
+    environment:
+      IV_ARCHIVE_DB: /data/iv_archive.db
+      TICKERS: GLD,XRT,EQT,UNG        # edit this list
+      YEARS: "5"
+      SCHEDULE_HOUR: "22"             # UTC hour for the daily run (Mon–Fri)
+      SCHEDULE_MIN: "0"
+    volumes:
+      - screener_data:/data
+    networks:
+      - proxy                          # same network as nginx
+
+# ─── add to your top-level volumes: block ────────────────────────────────────
+volumes:
+  screener_data:
+
+# ─── add to your top-level networks: block if not already present ─────────────
+networks:
+  proxy:
+    external: true                     # use your existing network

@@ -26,9 +26,13 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+import os
+
 from seasonality import compute_monthly_seasonality, MONTH_NAMES
 from options_analysis import black_scholes_price, RISK_FREE_RATE
 from db import save_backtest_result
+
+_DEFAULT_DB = os.environ.get("IV_ARCHIVE_DB", "iv_archive.db")
 
 VALID_STRATEGIES = ("long-call", "short-put", "long-put", "short-call")
 
@@ -504,6 +508,8 @@ def main():
                              "(default: price-only backtest)")
     parser.add_argument("--output", choices=["print", "db"], default="print",
                         help="Output mode: print to stdout (default) or save to iv_archive.db")
+    parser.add_argument("--iv-archive", default=_DEFAULT_DB,
+                        help="Path to the database (default: iv_archive.db or $IV_ARCHIVE_DB)")
     parser.add_argument("--csv", help="Save the full trade log to a CSV file")
     args = parser.parse_args()
 
@@ -522,7 +528,8 @@ def main():
                 if args.output == "db":
                     save_backtest_result(ticker, args.years, args.strategy,
                                          args.entry_avg, args.entry_wr,
-                                         result["summary"], result["trades"])
+                                         result["summary"], result["trades"],
+                                         db_path=args.iv_archive)
                     print(f"  {ticker} options backtest saved to database.")
                 else:
                     print_options_backtest_report(ticker, result, args.entry_avg, args.entry_wr)
@@ -531,7 +538,8 @@ def main():
                 if args.output == "db":
                     save_backtest_result(ticker, args.years, None,
                                          args.entry_avg, args.entry_wr,
-                                         result["summary"], result["trades"])
+                                         result["summary"], result["trades"],
+                                         db_path=args.iv_archive)
                     print(f"  {ticker} backtest saved to database.")
                 else:
                     print_backtest_report(ticker, result, args.entry_avg, args.entry_wr)

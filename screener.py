@@ -26,8 +26,11 @@ See README.md for methodological limitations (in particular regarding
 volatility estimation, see volatility.py).
 """
 import argparse
+import os
 import sys
 from datetime import datetime
+
+_DEFAULT_DB = os.environ.get("IV_ARCHIVE_DB", "iv_archive.db")
 
 import pandas as pd
 import yfinance as yf
@@ -250,8 +253,8 @@ def main():
     parser.add_argument("--tickers", required=True, help="Comma-separated list of tickers, e.g.: GLD,XRT,EQT,UNG")
     parser.add_argument("--years", type=int, default=5, help="Years of history to analyze (default 5)")
     parser.add_argument("--no-options", action="store_true", help="Skip the live options chain fetch")
-    parser.add_argument("--iv-archive", default="iv_archive.db",
-                        help="Path to the IV history database (default: iv_archive.db)")
+    parser.add_argument("--iv-archive", default=_DEFAULT_DB,
+                        help="Path to the IV history database (default: iv_archive.db or $IV_ARCHIVE_DB)")
     parser.add_argument("--output", choices=["print", "db"], default="print",
                         help="Output mode: print to stdout (default) or save to iv_archive.db")
     parser.add_argument("--csv", help="Save the final ranking to a CSV file")
