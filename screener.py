@@ -187,6 +187,19 @@ def print_report(report: dict):
                 print(f"  expiry {s3['expiry']}: spot {s3['spot']}, ATM strike {s3['strike_atm']}  |  "
                       f"call IV {s3['iv_call_pct']}% (bid {s3['bid_call']}/ask {s3['ask_call']})  |  "
                       f"put IV {s3['iv_put_pct']}% (bid {s3['bid_put']}/ask {s3['ask_put']})")
+            # Greeks and skew for the nearest expiry only
+            s0 = snap[0]
+            gc = s0.get("greeks_call", {})
+            gp = s0.get("greeks_put", {})
+            if gc:
+                print(f"\n  Greeks [{s0['expiry']}]  —  ATM call: "
+                      f"Δ {gc['delta']}  Γ {gc['gamma']}  Θ {gc['theta']}/day  V {gc['vega']}/1%IV")
+                print(f"                           ATM put:  "
+                      f"Δ {gp['delta']}  Γ {gp['gamma']}  Θ {gp['theta']}/day  V {gp['vega']}/1%IV")
+            skew = s0.get("skew_pct")
+            if skew is not None:
+                direction = "put premium over calls" if skew > 0 else "call premium over puts"
+                print(f"  Skew (put IV − call IV)  : {skew:+.1f}pp  ({direction})")
         elif isinstance(snap, list):
             print("  no listed options found for this ticker")
         else:
