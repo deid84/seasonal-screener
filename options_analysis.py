@@ -14,6 +14,9 @@ pricing in more or less movement than the historical seasonal pattern:
 """
 import math
 from datetime import date
+from scipy.stats import norm as _norm
+
+RISK_FREE_RATE = 0.04  # constant used for BS pricing throughout the module
 
 
 def compute_expected_move(spot: float, iv_pct: float, expiry: str) -> dict:
@@ -164,3 +167,94 @@ def suggest_strategy(
             result["pricing_note"] = "options fairly priced relative to the historical seasonal move"
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Black-Scholes pricing and Greeks
+# ---------------------------------------------------------------------------
+
+def _d1_d2(S: float, K: float, T: float, sigma: float, r: float):
+    """Internal: compute d1 and d2 for the BS formula."""
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    return d1, d1 - sigma * math.sqrt(T)
+
+
+def black_scholes_price(
+    S: float,
+    K: float,
+    T: float,
+    iv_pct: float,
+    r: float = RISK_FREE_RATE,
+    option_type: str = "call",
+) -> float:
+    """
+    Standard Black-Scholes European option price.
+
+    Parameters
+    ----------
+    S         : current spot price
+    K         : strike price
+    T         : time to expiry in years (e.g. 30/365)
+    iv_pct    : implied volatility in percent (e.g. 28.5 for 28.5%)
+    r         : risk-free rate as decimal (default 4%)
+    option_type : "call" or "put"
+
+    Returns the option price in the same currency as S.
+    """
+    sigma = iv_pct / 100
+    if T <= 0:
+        return max(S - K, 0.0) if option_type == "call" else max(K - S, 0.0)
+    if sigma <= 0:
+        return 0.0
+    d1, d2 = _d1_d2(S, K, T, sigma, r)
+    if option_type == "call":
+        return S * _norm.cdf(d1) - K * math.exp(-r * T) * _norm.cdf(d2)
+    return K * math.exp(-r * T) * _norm.cdf(-d2) - S * _norm.cdf(-d1)
+
+
+def black_scholes_greeks(
+    S: float,
+    K: float,
+    T: float,
+    iv_pct: float,
+    r: float = RISK_FREE_RATE,
+    option_type: str = "call",
+) -> dict:
+    """
+    Computes the main BS Greeks for a European option.
+
+    Returns
+    -------
+    delta : rate of change of option price vs spot
+    gamma : rate of change of delta vs spot (same for call and put)
+    theta : time decay in $ per calendar day (negative = cost of carry)
+    vega  : sensitivity to a 1% change in IV, in $
+    """
+    sigma = iv_pct / 100
+    if T <= 0 or sigma <= 0:
+        return {
+            "delta": (1.0 if option_type == "call" else -1.0),
+            "gamma": 0.0, "theta": 0.0, "vega": 0.0,
+        }
+    d1, d2 = _d1_d2(S, K, T, sigma, r)
+    n_d1 = _norm.pdf(d1)
+    gamma = round(n_d1 / (S * sigma * math.sqrt(T)), 5)
+    vega  = round(S * n_d1 * math.sqrt(T) / 100, 3)   # per 1% IV move
+    if option_type == "call":
+        delta = _norm.cdf(d1)
+        theta = (
+            -S * n_d1 * sigma / (2 * math.sqrt(T))
+            - r * K * math.exp(-r * T) * _norm.cdf(d2)
+        ) / 365
+    else:
+        delta = _norm.cdf(d1) - 1
+        theta = (
+            -S * n_d1 * sigma / (2 * math.sqrt(T))
+            + r * K * math.exp(-r * T) * _norm.cdf(-d2)
+        ) / 365
+    return {
+        "delta": round(delta, 3),
+        "gamma": gamma,
+        "theta": round(theta, 3),
+        "vega":  vega,
+    }
