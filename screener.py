@@ -34,6 +34,7 @@ import yfinance as yf
 
 from seasonality import compute_monthly_seasonality, MONTH_NAMES, reliability_flag
 from volatility import realized_vol_percentile, fetch_atm_iv_snapshot
+from iv_archive import save_snapshot, compute_iv_rank
 
 
 def fetch_history(ticker: str, years: int) -> pd.DataFrame:
@@ -46,7 +47,7 @@ def fetch_history(ticker: str, years: int) -> pd.DataFrame:
     return df
 
 
-def analyze_ticker(ticker: str, years: int, fetch_options: bool = True) -> dict:
+def analyze_ticker(ticker: str, years: int, fetch_options: bool = True, iv_db: str = "iv_archive.db") -> dict:
     current_month = datetime.now().month
     next_month = current_month % 12 + 1
 
@@ -72,9 +73,18 @@ def analyze_ticker(ticker: str, years: int, fetch_options: bool = True) -> dict:
 
     if fetch_options:
         try:
-            report["options_snapshot"] = fetch_atm_iv_snapshot(ticker)
+            snap = fetch_atm_iv_snapshot(ticker)
+            report["options_snapshot"] = snap
+            # persist snapshot and compute IV rank from accumulated history
+            if isinstance(snap, list) and snap:
+                save_snapshot(ticker, snap, iv_db)
+                current_iv = (snap[0]["iv_call_pct"] + snap[0]["iv_put_pct"]) / 2
+                report["iv_rank"] = compute_iv_rank(ticker, current_iv, db_path=iv_db)
+            else:
+                report["iv_rank"] = None
         except Exception as e:
             report["options_snapshot"] = f"unavailable ({e})"
+            report["iv_rank"] = None
 
     return report
 
@@ -158,6 +168,17 @@ def print_report(report: dict):
         else:
             print(f"  {snap}")
 
+        ivr = report.get("iv_rank")
+        if ivr and ivr.get("available"):
+            print(f"\nIV Rank / IV Percentile (from {ivr['n_observations']} stored observations, "
+                  f"period range {ivr['iv_min_period']}%–{ivr['iv_max_period']}%):")
+            print(f"  IV Rank       : {ivr['iv_rank']}  "
+                  f"({'LOW — options cheap vs own history' if ivr['iv_rank'] < 25 else 'HIGH — options expensive vs own history' if ivr['iv_rank'] > 75 else 'normal range'})")
+            print(f"  IV Percentile : {ivr['iv_percentile']}th")
+        elif ivr and not ivr.get("available"):
+            print(f"\n  IV Rank: not yet available "
+                  f"({ivr['n_observations']}/{ivr['min_required']} observations collected — keep running the screener daily)")
+
     print(f"\nCombined score for ranking (seasonality + volatility discount): {score_opportunity(report)}")
     print()
 
@@ -167,6 +188,8 @@ def main():
     parser.add_argument("--tickers", required=True, help="Comma-separated list of tickers, e.g.: GLD,XRT,EQT,UNG")
     parser.add_argument("--years", type=int, default=5, help="Years of history to analyze (default 5)")
     parser.add_argument("--no-options", action="store_true", help="Skip the live options chain fetch")
+    parser.add_argument("--iv-archive", default="iv_archive.db",
+                        help="Path to the IV history database (default: iv_archive.db)")
     parser.add_argument("--csv", help="Save the final ranking to a CSV file")
     args = parser.parse_args()
 
@@ -176,7 +199,7 @@ def main():
     for ticker in tickers:
         print(f"Downloading data for {ticker}...")
         try:
-            report = analyze_ticker(ticker, args.years, fetch_options=not args.no_options)
+            report = analyze_ticker(ticker, args.years, fetch_options=not args.no_options, iv_db=args.iv_archive)
             reports.append(report)
         except Exception as e:
             print(f"  ERROR on {ticker}: {e}", file=sys.stderr)
