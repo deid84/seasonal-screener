@@ -35,6 +35,7 @@ import yfinance as yf
 from seasonality import compute_monthly_seasonality, MONTH_NAMES, reliability_flag
 from volatility import realized_vol_percentile, fetch_atm_iv_snapshot
 from iv_archive import save_snapshot, compute_iv_rank
+from options_analysis import compute_expected_move, suggest_strategy
 
 
 def fetch_history(ticker: str, years: int) -> pd.DataFrame:
@@ -85,6 +86,29 @@ def analyze_ticker(ticker: str, years: int, fetch_options: bool = True, iv_db: s
         except Exception as e:
             report["options_snapshot"] = f"unavailable ({e})"
             report["iv_rank"] = None
+
+    # Options analysis: expected move + strategy suggestion
+    snap = report.get("options_snapshot")
+    seas_now = report.get("seasonality_current_month")
+    if isinstance(snap, list) and snap and seas_now:
+        atm = snap[0]
+        iv_mid = (atm["iv_call_pct"] + atm["iv_put_pct"]) / 2
+        em = compute_expected_move(atm["spot"], iv_mid, atm["expiry"])
+
+        # Use IV Rank if available, fall back to HV percentile
+        ivr = report.get("iv_rank")
+        if ivr and ivr.get("available"):
+            iv_ref = ivr["iv_rank"]
+        else:
+            iv_ref = report["volatility"].get("hv_percentile")
+
+        report["options_analysis"] = suggest_strategy(
+            seas_now["avg_pct"],
+            seas_now["win_rate_pct"],
+            iv_ref,
+            expected_move=em,
+        )
+        report["options_analysis"]["expected_move"] = em
 
     return report
 
@@ -178,6 +202,30 @@ def print_report(report: dict):
         elif ivr and not ivr.get("available"):
             print(f"\n  IV Rank: not yet available "
                   f"({ivr['n_observations']}/{ivr['min_required']} observations collected — keep running the screener daily)")
+
+    oa = report.get("options_analysis")
+    if oa:
+        print("\nOptions analysis:")
+        em = oa.get("expected_move", {})
+        if "expected_move_pct" in em:
+            print(f"  Expected move (options pricing) : ±{em['expected_move_pct']}%"
+                  f"  (±${em['expected_move_dollar']}  →  range ${em['range_low']} / ${em['range_high']})"
+                  f"  [DTE: {em['dte']}, expiry: {em['expiry']}]")
+        seas_avg = oa.get("seasonal_avg_pct") or (
+            report["seasonality_current_month"]["avg_pct"]
+            if report.get("seasonality_current_month") else None
+        )
+        if seas_avg is not None:
+            print(f"  Seasonal avg (historical)       : {seas_avg:+.2f}%")
+        if "pricing_ratio" in oa:
+            print(f"  Pricing ratio (EM / seasonal)   : {oa['pricing_ratio']}×  — {oa['pricing_note']}")
+
+        bias_label = oa["bias"].upper()
+        iv_label = oa["iv_level"].upper()
+        print(f"\nStrategy suggestion  [bias: {bias_label}  |  IV: {iv_label}]:")
+        print(f"  {oa['strategy']}")
+        print(f"  Why    : {oa['rationale']}")
+        print(f"  How    : {oa['structure']}")
 
     print(f"\nCombined score for ranking (seasonality + volatility discount): {score_opportunity(report)}")
     print()
