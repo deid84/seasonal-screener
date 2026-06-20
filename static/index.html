@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>py-screener</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+      --text: #e2e8f0; --muted: #718096; --accent: #4f9cf9;
+      --green: #48bb78; --red: #fc8181; --yellow: #f6c90e;
+    }
+
+    body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; font-size: 14px; }
+
+    header {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 14px 24px; display: flex; align-items: center; gap: 16px;
+    }
+    header h1 { font-size: 18px; font-weight: 600; color: var(--accent); }
+    #last-updated { font-size: 12px; color: var(--muted); margin-left: auto; }
+    #refresh-btn {
+      background: var(--accent); color: #fff; border: none; border-radius: 6px;
+      padding: 6px 14px; cursor: pointer; font-size: 13px;
+    }
+    #refresh-btn:hover { opacity: .85; }
+
+    main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+    #empty-state { text-align: center; padding: 60px; color: var(--muted); }
+    #empty-state code {
+      display: inline-block; margin-top: 12px; padding: 8px 16px;
+      background: var(--surface); border-radius: 6px; font-family: monospace; font-size: 13px;
+    }
+
+    /* ---- Ranking table ---- */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    .card-title { padding: 14px 18px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--border); }
+
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      padding: 10px 14px; text-align: left; font-size: 12px; font-weight: 600;
+      color: var(--muted); text-transform: uppercase; letter-spacing: .04em;
+      border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; white-space: nowrap;
+    }
+    th:hover { color: var(--text); }
+    th.sorted-asc::after { content: ' ↑'; color: var(--accent); }
+    th.sorted-desc::after { content: ' ↓'; color: var(--accent); }
+
+    td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr.data-row { cursor: pointer; transition: background .12s; }
+    tr.data-row:hover { background: rgba(79,156,249,.07); }
+    tr.data-row.selected { background: rgba(79,156,249,.13); }
+
+    .ticker-badge {
+      font-weight: 700; font-size: 13px; letter-spacing: .04em;
+      padding: 3px 8px; background: rgba(79,156,249,.15); border-radius: 4px; color: var(--accent);
+    }
+    .score-bar-wrap { display: flex; align-items: center; gap: 8px; }
+    .score-bar { height: 6px; border-radius: 3px; background: var(--accent); min-width: 2px; }
+    .score-val { font-weight: 600; min-width: 36px; }
+
+    .sig-badge {
+      font-size: 11px; padding: 2px 7px; border-radius: 4px; white-space: nowrap;
+      font-weight: 600;
+    }
+    .sig-green { background: rgba(72,187,120,.18); color: var(--green); }
+    .sig-yellow { background: rgba(246,201,14,.18); color: var(--yellow); }
+    .sig-red   { background: rgba(252,129,129,.18); color: var(--red); }
+
+    .strategy-pill {
+      font-size: 11px; padding: 3px 8px; border-radius: 12px;
+      background: rgba(255,255,255,.07); color: var(--muted); white-space: nowrap;
+    }
+    .pill-bullish { background: rgba(72,187,120,.15); color: var(--green); }
+    .pill-bearish { background: rgba(252,129,129,.15); color: var(--red); }
+
+    /* ---- Detail panel ---- */
+    #detail-panel {
+      margin-top: 20px; display: none;
+    }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
+
+    .detail-section { padding: 16px 18px; }
+    .detail-section h3 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 12px; }
+    .kv-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .kv-row:last-child { border-bottom: none; }
+    .kv-label { color: var(--muted); }
+    .kv-value { font-weight: 500; text-align: right; }
+
+    .seas-table { width: 100%; font-size: 12px; }
+    .seas-table th { font-size: 11px; }
+    .seas-table td { padding: 6px 10px; }
+    .best-month { color: var(--green); }
+    .worst-month { color: var(--red); }
+
+    #iv-chart-wrap { padding: 16px 18px; }
+    #iv-chart-wrap h3 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 14px; }
+    #iv-chart-wrap p { color: var(--muted); font-size: 13px; }
+
+    .loading { color: var(--muted); padding: 40px; text-align: center; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>py-screener</h1>
+  <span id="last-updated">—</span>
+  <button id="refresh-btn" onclick="loadData()">↻ Refresh</button>
+</header>
+
+<main>
+  <div id="empty-state" style="display:none">
+    <p>No screening results yet.</p>
+    <code>python screener.py --tickers GLD,XRT,EQT --years 5 --output db</code>
+  </div>
+
+  <div id="ranking-card" class="card" style="display:none">
+    <div class="card-title">Ranking — latest run</div>
+    <div style="overflow-x:auto">
+      <table id="ranking-table">
+        <thead>
+          <tr>
+            <th data-col="ticker">Ticker</th>
+            <th data-col="score">Score</th>
+            <th data-col="curr_month">Month</th>
+            <th data-col="curr_avg">Avg%</th>
+            <th data-col="curr_wr">Win rate</th>
+            <th data-col="significance">Significance</th>
+            <th data-col="hv">HV %ile</th>
+            <th data-col="strategy">Strategy</th>
+          </tr>
+        </thead>
+        <tbody id="ranking-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="detail-panel" class="card">
+    <div class="card-title" id="detail-title">Detail</div>
+    <div class="detail-grid">
+
+      <div class="detail-section">
+        <h3>Seasonality — current &amp; next month</h3>
+        <div id="seas-kv"></div>
+      </div>
+
+      <div class="detail-section">
+        <h3>Volatility &amp; IV</h3>
+        <div id="vol-kv"></div>
+      </div>
+
+      <div class="detail-section">
+        <h3>Options analysis</h3>
+        <div id="opt-kv"></div>
+      </div>
+
+      <div class="detail-section">
+        <h3>Greeks &amp; Skew (nearest expiry)</h3>
+        <div id="greeks-kv"></div>
+      </div>
+
+      <div class="detail-section" style="grid-column: 1 / -1">
+        <h3>Full seasonality table</h3>
+        <div style="overflow-x:auto">
+          <table class="seas-table" id="full-seas-table">
+            <thead>
+              <tr><th>Month</th><th>Avg%</th><th>Std%</th><th>n</th><th>Win rate%</th><th>p-value</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+
+    <div id="iv-chart-wrap">
+      <h3>IV History</h3>
+      <p id="iv-no-data" style="display:none">No IV history yet — run screener daily to accumulate data.</p>
+      <canvas id="iv-chart" height="80" style="display:none"></canvas>
+    </div>
+  </div>
+</main>
+
+<script>
+let allData = [];
+let sortCol = 'score', sortDir = -1;
+let ivChart = null;
+let selectedTicker = null;
+
+async function loadData() {
+  document.getElementById('last-updated').textContent = 'Loading…';
+  try {
+    const res = await fetch('/api/results');
+    const json = await res.json();
+    if (!json.data || json.data.length === 0) {
+      document.getElementById('empty-state').style.display = 'block';
+      document.getElementById('ranking-card').style.display = 'none';
+      return;
+    }
+    allData = json.data;
+    document.getElementById('empty-state').style.display = 'none';
+    document.getElementById('ranking-card').style.display = 'block';
+    const ts = new Date(json.run_ts + 'Z').toLocaleString();
+    document.getElementById('last-updated').textContent = 'Last run: ' + ts;
+    renderTable();
+    if (selectedTicker) {
+      const row = allData.find(d => d.ticker === selectedTicker);
+      if (row) renderDetail(row);
+    }
+  } catch(e) {
+    document.getElementById('last-updated').textContent = 'Error loading data';
+    console.error(e);
+  }
+}
+
+function renderTable() {
+  const sorted = [...allData].sort((a, b) => {
+    const va = colValue(a, sortCol), vb = colValue(b, sortCol);
+    if (va == null) return 1; if (vb == null) return -1;
+    return sortDir * (va > vb ? 1 : va < vb ? -1 : 0);
+  });
+
+  document.querySelectorAll('th').forEach(th => {
+    th.classList.remove('sorted-asc','sorted-desc');
+    if (th.dataset.col === sortCol)
+      th.classList.add(sortDir === 1 ? 'sorted-asc' : 'sorted-desc');
+  });
+
+  const tbody = document.getElementById('ranking-body');
+  tbody.innerHTML = '';
+  const maxScore = Math.max(...allData.map(d => d.score || 0));
+
+  sorted.forEach(d => {
+    const r = d.result || {};
+    const sc = d.score || 0;
+    const seas = r.seasonality_current_month || {};
+    const vol  = r.volatility || {};
+    const oa   = r.options_analysis || {};
+    const ivr  = r.iv_rank || {};
+
+    const sigText = r.reliability_current_month || '—';
+    const sigClass = sigText.includes('significant (') && !sigText.includes('not') ? 'sig-green'
+                   : sigText.includes('marginal') ? 'sig-yellow' : 'sig-red';
+
+    const hvDisplay = ivr.available
+      ? `IV Rank ${ivr.iv_rank}`
+      : vol.hv_percentile != null ? `HV ${vol.hv_percentile}th` : '—';
+
+    const stratName = (oa.strategy || '—').split('/')[0].trim();
+    const stratClass = oa.bias === 'bullish' ? 'pill-bullish' : oa.bias === 'bearish' ? 'pill-bearish' : '';
+
+    const tr = document.createElement('tr');
+    tr.className = 'data-row' + (d.ticker === selectedTicker ? ' selected' : '');
+    tr.dataset.ticker = d.ticker;
+    tr.innerHTML = `
+      <td><span class="ticker-badge">${d.ticker}</span></td>
+      <td>
+        <div class="score-bar-wrap">
+          <div class="score-bar" style="width:${Math.round(sc/maxScore*80)}px"></div>
+          <span class="score-val">${sc.toFixed(2)}</span>
+        </div>
+      </td>
+      <td>${r.current_month || '—'}</td>
+      <td style="color:${(seas.avg_pct||0)>=0?'var(--green)':'var(--red)'};font-weight:600">
+        ${seas.avg_pct != null ? (seas.avg_pct >= 0 ? '+' : '') + seas.avg_pct.toFixed(2) + '%' : '—'}
+      </td>
+      <td>${seas.win_rate_pct != null ? seas.win_rate_pct + '%' : '—'}</td>
+      <td><span class="sig-badge ${sigClass}">${sigText}</span></td>
+      <td>${hvDisplay}</td>
+      <td><span class="strategy-pill ${stratClass}">${stratName}</span></td>
+    `;
+    tr.addEventListener('click', () => {
+      document.querySelectorAll('.data-row').forEach(r => r.classList.remove('selected'));
+      tr.classList.add('selected');
+      selectedTicker = d.ticker;
+      renderDetail(d);
+      loadIVChart(d.ticker);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function colValue(d, col) {
+  const r = d.result || {}, seas = r.seasonality_current_month || {}, vol = r.volatility || {};
+  const map = {
+    ticker: d.ticker, score: d.score,
+    curr_month: r.current_month, curr_avg: seas.avg_pct,
+    curr_wr: seas.win_rate_pct, significance: seas.p_value,
+    hv: vol.hv_percentile, strategy: (r.options_analysis||{}).strategy,
+  };
+  return map[col] ?? null;
+}
+
+document.querySelectorAll('th[data-col]').forEach(th => {
+  th.addEventListener('click', () => {
+    if (sortCol === th.dataset.col) { sortDir *= -1; }
+    else { sortCol = th.dataset.col; sortDir = -1; }
+    renderTable();
+  });
+});
+
+function kv(label, value, extraClass='') {
+  return `<div class="kv-row">
+    <span class="kv-label">${label}</span>
+    <span class="kv-value ${extraClass}">${value ?? '—'}</span>
+  </div>`;
+}
+
+function renderDetail(d) {
+  const r = d.result || {};
+  const seas  = r.seasonality_current_month || {};
+  const seas2 = r.seasonality_next_month    || {};
+  const vol   = r.volatility || {};
+  const oa    = r.options_analysis || {};
+  const ivr   = r.iv_rank || {};
+  const snap  = (r.options_snapshot || [])[0] || {};
+  const gc    = snap.greeks_call || {};
+
+  document.getElementById('detail-title').textContent = `Detail — ${d.ticker}`;
+  document.getElementById('detail-panel').style.display = 'block';
+
+  // Seasonality
+  document.getElementById('seas-kv').innerHTML = [
+    kv('Current month', r.current_month),
+    kv('Avg return', seas.avg_pct != null ? (seas.avg_pct>=0?'+':'')+seas.avg_pct.toFixed(2)+'%' : null,
+       seas.avg_pct >= 0 ? 'color:var(--green)' : 'color:var(--red)'),
+    kv('Win rate', seas.win_rate_pct != null ? seas.win_rate_pct+'%' : null),
+    kv('Significance', r.reliability_current_month),
+    kv('Next month', r.next_month),
+    kv('Next avg return', seas2.avg_pct != null ? (seas2.avg_pct>=0?'+':'')+seas2.avg_pct.toFixed(2)+'%' : null),
+    kv('Next win rate', seas2.win_rate_pct != null ? seas2.win_rate_pct+'%' : null),
+  ].join('');
+
+  // Volatility
+  document.getElementById('vol-kv').innerHTML = [
+    kv('Current HV', vol.hv_current_pct != null ? vol.hv_current_pct+'%' : null),
+    kv('HV percentile', vol.hv_percentile != null ? vol.hv_percentile+'th' : null),
+    kv('IV Rank', ivr.available ? ivr.iv_rank : 'building history…'),
+    kv('IV Percentile', ivr.available ? ivr.iv_percentile+'th' : null),
+    kv('IV observations', ivr.n_observations != null ? ivr.n_observations+' days' : null),
+    kv('Spot', snap.spot != null ? '$'+snap.spot : null),
+    kv('ATM IV (call)', snap.iv_call_pct != null ? snap.iv_call_pct+'%' : null),
+    kv('ATM IV (put)', snap.iv_put_pct  != null ? snap.iv_put_pct+'%'  : null),
+    kv('Skew (put−call)', snap.skew_pct != null ? (snap.skew_pct>=0?'+':'')+snap.skew_pct+'pp' : null),
+  ].join('');
+
+  // Options analysis
+  const em = oa.expected_move || {};
+  document.getElementById('opt-kv').innerHTML = [
+    kv('Bias', oa.bias ? oa.bias.toUpperCase() : null),
+    kv('IV level', oa.iv_level ? oa.iv_level.toUpperCase() : null),
+    kv('Strategy', oa.strategy),
+    kv('Expected move', em.expected_move_pct != null ? '±'+em.expected_move_pct+'%  (±$'+em.expected_move_dollar+')' : null),
+    kv('DTE', em.dte != null ? em.dte+' days' : null),
+    kv('1σ range', em.range_low != null ? '$'+em.range_low+' / $'+em.range_high : null),
+    kv('Pricing ratio', oa.pricing_ratio != null ? oa.pricing_ratio+'×' : null),
+    kv('Note', oa.pricing_note),
+  ].join('');
+
+  // Greeks
+  document.getElementById('greeks-kv').innerHTML = gc.delta != null ? [
+    kv('Delta (call)', gc.delta),
+    kv('Gamma', gc.gamma),
+    kv('Theta/day (call)', gc.theta != null ? '$'+gc.theta : null),
+    kv('Vega / 1%IV (call)', gc.vega != null ? '$'+gc.vega : null),
+    kv('Why rationale', oa.rationale),
+    kv('How structure', oa.structure),
+  ].join('') : '<div class="kv-row"><span class="kv-label" style="color:var(--muted)">No options data available</span></div>';
+
+  // Full seasonality table
+  const ft = r.full_table || [];
+  const tbody = document.querySelector('#full-seas-table tbody');
+  tbody.innerHTML = '';
+  ft.forEach((row, i) => {
+    const cls = i === 0 ? 'best-month' : i === ft.length-1 ? 'worst-month' : '';
+    const pStr = row.p_value != null ? row.p_value.toFixed(3) : '—';
+    const avgStr = row.avg_pct != null ? (row.avg_pct>=0?'+':'')+row.avg_pct.toFixed(2)+'%' : '—';
+    tbody.innerHTML += `<tr class="${cls}">
+      <td>${row.month||row.index||'?'}</td>
+      <td>${avgStr}</td>
+      <td>${row.std_pct != null ? row.std_pct.toFixed(2)+'%' : '—'}</td>
+      <td>${row.n_obs ?? '—'}</td>
+      <td>${row.win_rate_pct != null ? row.win_rate_pct+'%' : '—'}</td>
+      <td style="color:${row.p_value<0.05?'var(--green)':row.p_value<0.1?'var(--yellow)':'var(--muted)'}">${pStr}</td>
+    </tr>`;
+  });
+
+  document.getElementById('detail-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function loadIVChart(ticker) {
+  document.getElementById('iv-no-data').style.display = 'none';
+  document.getElementById('iv-chart').style.display = 'none';
+
+  try {
+    const res = await fetch(`/api/iv-history/${ticker}`);
+    if (!res.ok) {
+      document.getElementById('iv-no-data').style.display = 'block';
+      return;
+    }
+    const json = await res.json();
+    const history = json.history || [];
+    if (history.length < 2) {
+      document.getElementById('iv-no-data').style.display = 'block';
+      return;
+    }
+
+    document.getElementById('iv-chart').style.display = 'block';
+    const labels = history.map(h => h.date);
+    const values = history.map(h => h.iv);
+
+    if (ivChart) ivChart.destroy();
+    ivChart = new Chart(document.getElementById('iv-chart'), {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: `${ticker} IV mid%`,
+          data: values,
+          borderColor: '#4f9cf9',
+          backgroundColor: 'rgba(79,156,249,.08)',
+          borderWidth: 2,
+          pointRadius: history.length > 60 ? 0 : 3,
+          tension: 0.3,
+          fill: true,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#718096', maxTicksLimit: 8 }, grid: { color: '#2a2d3a' } },
+          y: { ticks: { color: '#718096', callback: v => v+'%' }, grid: { color: '#2a2d3a' } }
+        }
+      }
+    });
+  } catch(e) {
+    document.getElementById('iv-no-data').style.display = 'block';
+  }
+}
+
+loadData();
+</script>
+</body>
+</html>
