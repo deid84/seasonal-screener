@@ -29,14 +29,15 @@ Data source: Yahoo Finance via `yfinance`. No paid data feed required.
 
 | Module | Purpose |
 |---|---|
-| `screener.py` | Screens tickers: seasonality, IV, Greeks, skew, expected move, strategy suggestion |
-| `backtest.py` | Walk-forward backtest of the seasonal signal — price-only or options-aware |
-| `server.py` | FastAPI HTTP server + built-in daily scheduler; serves the web dashboard |
-| `seasonality.py` | Monthly return statistics + t-test significance per month |
-| `volatility.py` | Realized HV percentile + live ATM IV snapshot with Greeks and skew |
+| `screener.py` | Main CLI: seasonality, HV/IV, Greeks, skew, expected move, strategy suggestion, technicals, earnings warning, watchlist |
+| `seasonality.py` | Monthly return statistics, t-test with Benjamini-Hochberg correction, sub-period consistency check |
+| `volatility.py` | Realized HV percentile + live ATM IV snapshot with Greeks, skew, and liquidity check |
+| `technicals.py` | MA50/MA200, RSI(14), 52-week range percentile, trend bias, seasonal alignment |
 | `options_analysis.py` | Expected move, strategy selector (3×3 matrix), Black-Scholes pricing and Greeks |
-| `iv_archive.py` | Accumulates daily IV snapshots in SQLite to compute IV Rank over time |
-| `db.py` | Persists screening and backtest results to SQLite for the dashboard |
+| `iv_archive.py` | Accumulates daily IV snapshots in SQLite to compute IV Rank / IV Percentile over time |
+| `db.py` | Persists screening results, backtest results, and watchlist to SQLite |
+| `backtest.py` | Walk-forward backtest of the seasonal signal — price-only or options-aware |
+| `server.py` | FastAPI HTTP server + built-in APScheduler daily run; serves the web dashboard |
 
 ---
 
@@ -150,62 +151,93 @@ python screener.py --remove UNG
 
 ### Output sections (per ticker)
 
-**Current and next month seasonality**
-Historical average return, win rate, number of observations, and a statistical
-significance flag for the current and next calendar month.
+**Earnings warning** *(shown at top if applicable)*
+If an earnings date falls within the next 45 days (via `yfinance` calendar), a warning
+appears before any analysis. Earnings inside the DTE window cause IV to spike and
+compress unpredictably — the seasonal signal becomes unreliable for options strategies.
+Note: only works for single stocks. ETFs have no earnings date in yfinance.
 
-The significance flag comes from a one-sample t-test (H₀: avg return = 0),
-with **Benjamini-Hochberg correction** applied across all 12 simultaneous tests
-to control the false discovery rate (without correction, ~0.6 false positives
-are expected at α=0.05):
-- `significant (p_adj=0.021)` — the pattern survives multiple-testing correction
-- `marginal (p_adj=0.08)` — borderline, treat with caution
-- `not significant (p_adj=0.45)` — no reliable edge in this month's history
+---
+
+**Current and next month seasonality**
+Historical average return, win rate, number of observations, and two quality flags.
+
+*Statistical significance* — one-sample t-test (H₀: avg return = 0) with
+**Benjamini-Hochberg FDR correction** across all 12 simultaneous tests.
+Without correction, ~0.6 false positives are expected at α=0.05 purely by chance:
+- `significant (p_adj=0.021)` — pattern survives multiple-testing correction
+- `marginal (p_adj=0.08)` — borderline; treat with caution
+- `not significant (p_adj=0.45)` — no statistically reliable edge
+
+*Sub-period consistency* — the historical record is split into two equal halves.
+If the pattern (direction + win_rate side) holds in both halves it is flagged
+`consistent`; if it reverses or contradicts, `mixed`. With only 5–6 years of
+data `mixed` is common and expected — it means the pattern is not yet proven
+stable, not that it is wrong.
 
 **Full seasonality table**
-All 12 months with `avg_pct`, `std_pct`, `n_obs`, `win_rate_pct`, `p_value`, and `p_value_adj`.
-Use `n_obs` and `p_value_adj` together: a month with `n_obs=4` has too little data
-regardless of p-value.
+All 12 months with `avg_pct`, `std_pct`, `n_obs`, `win_rate_pct`, `consistency`,
+`p_value`, and `p_value_adj`. Read `n_obs`, `p_value_adj`, and `consistency`
+together — a month with 4 observations and `mixed` consistency is not actionable
+regardless of the p-value.
 
-**Earnings warning**
-If an earnings date is detected within the next 45 days (via `yfinance` calendar),
-a warning is shown at the top of the ticker report. Earnings inside the DTE window
-cause IV to behave atypically and make the seasonal signal unreliable for options.
-Note: only works for single stocks — ETFs have no earnings date in yfinance.
+---
 
 **Realized historical volatility (HV)**
 Current 20-day realized volatility and its percentile relative to the downloaded
-history. Used as a proxy for IV — see Limitations below.
+history. Used as a proxy for IV when the IV archive is empty — see Limitations.
 
 **Live IV snapshot**
-ATM call and put for the next 1–2 available expiries: IV, bid/ask, and computed
-Greeks (Delta, Gamma, Theta per day, Vega per 1% IV move).
+ATM call and put for the next 1–2 available expiries: IV, bid/ask spread,
+liquidity flag, Greeks (Δ, Γ, Θ/day, V/1%IV), and skew (put IV − call IV).
 
-Also shows **skew** (put IV − call IV at the same ATM strike). Positive skew
-means the market is paying more for put protection.
+*Liquidity flag* — if either leg's bid-ask spread exceeds **15% of the mid**,
+or if the mid is zero, the expiry is flagged `⚠ ILLIQUID`. Spread percentages
+are shown for both legs so you can judge tradability at a glance. Always verify
+on your broker before placing an order — yfinance data can lag.
 
 **IV Rank / IV Percentile** *(available after 30+ daily runs)*
 Once the local archive has enough snapshots:
 - **IV Rank** = (current IV − period low) / (period high − period low) × 100
 - **IV Percentile** = % of stored days where IV was below today's level
 
-More accurate than the HV proxy because it reflects actual market pricing.
-The archive grows automatically every time you run the screener with options enabled.
+More accurate than the HV proxy because it uses real market IV, not realized vol.
+The archive grows automatically with every screener run that fetches options data.
+
+---
 
 **Options analysis**
-- **Expected move** = IV × √(DTE/365) expressed as ±% and ±$ with the implied
+- **Expected move** = IV × √(DTE/365), expressed as ±% and ±$ with the implied
   1-sigma price range.
-- **Pricing ratio** = expected move / |seasonal avg|. Below 1: options are
-  pricing in less movement than history suggests (favours buyers). Above 2:
-  options are pricing in more than twice the historical move (favours sellers).
-- **Strategy suggestion** from the directional bias (bullish/bearish/neutral)
-  combined with the IV level (low/normal/high):
+- **Pricing ratio** = expected move / |seasonal avg|. Below 1: options price in
+  less than the historical seasonal move (favours buyers). Above 2: options price
+  in more than twice the historical move (favours sellers).
+- **Strategy suggestion** from directional bias (bullish/bearish/neutral)
+  × IV level (low/normal/high):
 
   | Bias | IV low | IV normal | IV high |
   |---|---|---|---|
   | Bullish | Long Call / Debit Spread | Short Put | Short Put / CSP |
   | Bearish | Long Put / Debit Spread | Short Call | Short Call / Spread |
   | Neutral | Long Straddle / Strangle | No clear edge | Iron Condor / Strangle |
+
+---
+
+**Technical context**
+Calculated from the same price history already downloaded — no extra API calls.
+
+| Indicator | What it tells you |
+|---|---|
+| Price vs MA50/MA200 | Current trend direction and momentum |
+| RSI(14) | Overbought (>70) / oversold (<30) context |
+| 52-week range percentile | Where price sits in its annual range (0 = at lows, 100 = at highs) |
+| Trend bias | BULLISH / BEARISH / NEUTRAL — synthesises MA position and RSI |
+| **Trend alignment** | **ALIGNED / DIVERGENT / NEUTRAL vs seasonal bias** |
+
+The most actionable output is **trend alignment**. A seasonal bullish signal with
+a `DIVERGENT` technical trend has meaningfully lower conviction than an `ALIGNED`
+one — the tool flags it explicitly so you can decide whether to skip or downweight
+that setup.
 
 ---
 
@@ -386,55 +418,76 @@ curl -X POST https://screener.yourdomain.com/api/run
 
 ## Recommended workflow
 
-1. **Screen** with `screener.py` (or let the server do it automatically) to
-   find tickers with a favorable seasonal signal and contained IV. Check the
-   p-value and `n_obs` — a significant p-value on 4 observations is not useful.
+1. **Screen** (`screener.py --watchlist` or let the server run automatically).
+   Identify tickers where the seasonal signal is statistically non-trivial
+   (`p_adj < 0.10`), has enough history (`n_obs ≥ 7`), and shows `consistent`
+   sub-period behaviour.
 
-2. **Review the strategy suggestion** in the Options analysis section. Verify
-   that bias, IV level, and pricing ratio are consistent with your own view.
+2. **Check the earnings warning.** If it fires, skip or wait — IV behaviour
+   around earnings makes the seasonal signal unreliable for options.
 
-3. **Run the price-only backtest** to confirm the signal has an out-of-sample
+3. **Check technical alignment.** An `ALIGNED` trend confirmation raises
+   conviction. A `DIVERGENT` flag is a reason to downweight or skip the setup,
+   especially if the RSI is extreme.
+
+4. **Check liquidity.** If the nearest expiry shows `⚠ ILLIQUID`, look at the
+   next expiry or check on your broker — yfinance spreads are indicative only.
+
+5. **Review the strategy suggestion.** Verify that bias, IV level, and pricing
+   ratio are consistent with your own view before sizing a position.
+
+6. **Run the price-only backtest** to confirm the signal has an out-of-sample
    edge on the underlying over your desired lookback period.
 
-4. **Run the options backtest** (`--strategy long-call` or whichever was
+7. **Run the options backtest** (`--strategy long-call` or whichever was
    suggested) to see whether the edge survives after accounting for premium and
    theta decay.
 
-5. **Let the IV archive accumulate.** After 30+ daily runs the IV Rank replaces
-   the HV proxy for a more accurate read on whether options are cheap or expensive.
+8. **Let the IV archive accumulate.** After 30+ daily runs IV Rank replaces the
+   HV proxy for a more accurate read on whether options are cheap or expensive.
 
 ---
 
 ## Limitations — read before trading
 
+**Small sample size.** With 5 years of data you have at most 5 observations per
+month. Benjamini-Hochberg correction reduces false positives but cannot fix the
+fundamental problem: p-values are unreliable below ~10 observations. Prefer
+`--years 10` or more for any signal you intend to trade.
+
+**Sub-period consistency is weak with short history.** Splitting 5–6 years into
+two halves gives ~2–3 observations per half per month. `mixed` is almost always
+expected at this sample size — it is not a negative signal per se, just an honest
+reflection of insufficient data to confirm stability.
+
 **HV ≠ IV.** Realized historical volatility is used as a proxy for implied
-volatility throughout most of the tool. Real IV reflects market expectations and
-can diverge significantly from HV, especially around earnings, macro events, or
-regime shifts. The IV archive solves this over time but requires daily runs to
-accumulate data.
+volatility until the IV archive accumulates 30+ observations. Real IV reflects
+market expectations and can diverge significantly from HV around earnings, macro
+events, or volatility regime shifts. Let the archive grow before relying on the
+HV percentile for IV-level decisions.
 
-**Options backtest uses HV as IV proxy.** The options-aware backtest prices
-options with the 20-day realized HV, not the actual market IV on that date
-(historical IV data is not freely available). The backtest underestimates premium
-in high-IV regimes and overestimates it in low-IV regimes. Treat results as
-directionally informative, not exact.
+**Options backtest uses HV as IV proxy.** Historical IV data is not freely
+available. The backtest underestimates premium in high-IV regimes and
+overestimates it in low-IV regimes. Treat results as directionally informative,
+not exact.
 
-**ATM strike = entry spot.** The backtest assumes the option is struck exactly
-at the spot price at entry. Real markets list discrete strikes; the nearest
-available strike may add a small delta bias.
+**Liquidity filter is indicative.** The 15% bid-ask threshold is applied to
+yfinance data, which can lag or differ from real market conditions. Always verify
+on your broker before trading.
+
+**Technical indicators are price-only.** MA50/MA200 and RSI(14) capture trend
+and momentum but ignore volume, market breadth, or macro context. A `DIVERGENT`
+alignment flag is a prompt to investigate further, not an automatic disqualifier.
+
+**Earnings filter covers single stocks only.** ETFs do not have earnings dates
+in yfinance. For ETFs with earnings-sensitive underlying exposure (e.g. sector
+ETFs near reporting season), check manually.
+
+**ATM strike = entry spot.** The backtest uses the exact spot price as strike.
+Real discrete strikes introduce a small delta bias.
 
 **No transaction costs.** Bid/ask spread, commissions, and slippage are not
-modelled. For near-the-money options with wide spreads (common on illiquid ETFs),
-actual P&L will be worse.
-
-**Multiple testing.** Running 12 t-tests simultaneously (one per calendar month)
-means approximately 0.6 false positives are expected at α=0.05 even with no real
-edge. Always cross-check a significant month with enough observations (`n_obs`)
-and the backtest before acting on it.
-
-**Seasonality is a historical tendency, not a law.** With 5 years of data you
-have at most 5 observations per month. Prefer `--years 10` or more for any
-signal you intend to trade.
+modelled. For options with wide spreads, actual P&L will be materially worse.
 
 **This is an informational tool, not financial advice.** Use it as a starting
 point for your own research, not as sufficient reason to open a position.
