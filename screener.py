@@ -42,6 +42,7 @@ from volatility import realized_vol_percentile, fetch_atm_iv_snapshot
 from iv_archive import save_snapshot, compute_iv_rank
 from options_analysis import compute_expected_move, suggest_strategy
 from db import save_screening_result, add_to_watchlist, remove_from_watchlist, load_watchlist
+from technicals import compute_technicals, trend_alignment
 
 
 def fetch_history(ticker: str, years: int) -> pd.DataFrame:
@@ -121,6 +122,7 @@ def analyze_ticker(ticker: str, years: int, fetch_options: bool = True, iv_db: s
     }
 
     report["earnings_warning"] = check_earnings(ticker)
+    report["technicals"] = compute_technicals(df)
 
     if fetch_options:
         try:
@@ -159,6 +161,12 @@ def analyze_ticker(ticker: str, years: int, fetch_options: bool = True, iv_db: s
             expected_move=em,
         )
         report["options_analysis"]["expected_move"] = em
+
+    # Trend alignment: technical bias vs seasonal bias
+    tech = report.get("technicals", {})
+    oa   = report.get("options_analysis", {})
+    if tech and not tech.get("error") and oa:
+        report["trend_alignment"] = trend_alignment(tech["trend_bias"], oa["bias"])
 
     return report
 
@@ -203,16 +211,20 @@ def print_report(report: dict):
     print(f"\nCurrent month ({report['current_month']}):")
     s = report["seasonality_current_month"]
     if s:
+        cons = s.get("consistency", "")
+        cons_tag = f"  |  consistency: {cons}" if cons else ""
         print(f"  avg historical return: {s['avg_pct']:+.2f}%  |  win rate: {s['win_rate_pct']}%  "
-              f"|  observations: {int(s['n_obs'])}  |  {report['reliability_current_month']}")
+              f"|  observations: {int(s['n_obs'])}  |  {report['reliability_current_month']}{cons_tag}")
     else:
         print("  insufficient data for this month")
 
     s2 = report["seasonality_next_month"]
     print(f"\nNext month ({report['next_month']}):")
     if s2:
+        cons2 = s2.get("consistency", "")
+        cons2_tag = f"  |  consistency: {cons2}" if cons2 else ""
         print(f"  avg historical return: {s2['avg_pct']:+.2f}%  |  win rate: {s2['win_rate_pct']}%  "
-              f"|  observations: {int(s2['n_obs'])}")
+              f"|  observations: {int(s2['n_obs'])}{cons2_tag}")
     else:
         print("  insufficient data for this month")
 
@@ -238,9 +250,15 @@ def print_report(report: dict):
         snap = report["options_snapshot"]
         if isinstance(snap, list) and snap:
             for s3 in snap:
+                liq = s3.get("liquidity_ok")
+                liq_tag = "" if liq else "  ⚠ ILLIQUID"
+                sc = s3.get("spread_pct_call")
+                sp = s3.get("spread_pct_put")
+                spread_info = f"  spread call {sc}% / put {sp}%" if (sc or sp) else ""
                 print(f"  expiry {s3['expiry']}: spot {s3['spot']}, ATM strike {s3['strike_atm']}  |  "
                       f"call IV {s3['iv_call_pct']}% (bid {s3['bid_call']}/ask {s3['ask_call']})  |  "
-                      f"put IV {s3['iv_put_pct']}% (bid {s3['bid_put']}/ask {s3['ask_put']})")
+                      f"put IV {s3['iv_put_pct']}% (bid {s3['bid_put']}/ask {s3['ask_put']})"
+                      f"{spread_info}{liq_tag}")
             # Greeks and skew for the nearest expiry only
             s0 = snap[0]
             gc = s0.get("greeks_call", {})
@@ -293,6 +311,28 @@ def print_report(report: dict):
         print(f"  {oa['strategy']}")
         print(f"  Why    : {oa['rationale']}")
         print(f"  How    : {oa['structure']}")
+
+    tech = report.get("technicals", {})
+    if tech and not tech.get("error"):
+        print("\nTechnical context:")
+        if tech.get("ma50") and tech.get("ma200"):
+            ma50_tag  = "above" if tech["price_vs_ma50_pct"]  > 0 else "below"
+            ma200_tag = "above" if tech["price_vs_ma200_pct"] > 0 else "below"
+            print(f"  Price vs MA50  : {tech['price_vs_ma50_pct']:+.1f}%  ({ma50_tag})")
+            print(f"  Price vs MA200 : {tech['price_vs_ma200_pct']:+.1f}%  ({ma200_tag})")
+        elif tech.get("ma50"):
+            print(f"  Price vs MA50  : {tech['price_vs_ma50_pct']:+.1f}%  (MA200 unavailable — insufficient history)")
+        print(f"  RSI(14)        : {tech['rsi14']}  ({tech['rsi_label']})")
+        print(f"  52w range      : {tech['range_52w_pct']}th percentile")
+        print(f"  Trend bias     : {tech['trend_bias'].upper()}")
+        alignment = report.get("trend_alignment")
+        if alignment:
+            alignment_note = {
+                "aligned":  "technical trend confirms seasonal bias",
+                "divergent": "⚠  technical trend DIVERGES from seasonal bias — lower conviction",
+                "neutral":  "one or both signals are neutral",
+            }.get(alignment, "")
+            print(f"  Trend alignment: {alignment.upper()}  — {alignment_note}")
 
     print(f"\nCombined score for ranking (seasonality + volatility discount): {score_opportunity(report)}")
     print()

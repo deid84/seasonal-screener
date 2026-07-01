@@ -103,6 +103,19 @@ def fetch_atm_iv_snapshot(ticker: str, max_expiries: int = 2) -> list:
         dte         = max((_date.fromisoformat(exp) - _date.today()).days, 1)
         T           = dte / 365
 
+        bid_c, ask_c = float(atm_call["bid"]), float(atm_call["ask"])
+        bid_p, ask_p = float(atm_put["bid"]),  float(atm_put["ask"])
+        mid_c = (bid_c + ask_c) / 2
+        mid_p = (bid_p + ask_p) / 2
+        spread_pct_call = round((ask_c - bid_c) / mid_c * 100, 1) if mid_c > 0 else None
+        spread_pct_put  = round((ask_p - bid_p) / mid_p * 100, 1) if mid_p > 0 else None
+        # illiquid if either leg spread exceeds 15% of mid, or mid is zero
+        liquidity_ok = (
+            mid_c > 0 and mid_p > 0
+            and (spread_pct_call or 999) <= 15
+            and (spread_pct_put  or 999) <= 15
+        )
+
         results.append({
             "expiry": exp,
             "spot": round(float(spot), 2),
@@ -112,10 +125,13 @@ def fetch_atm_iv_snapshot(ticker: str, max_expiries: int = 2) -> list:
             "skew_pct": round(iv_put_pct - iv_call_pct, 1),
             "volume_call": int(atm_call["volume"]) if pd.notna(atm_call["volume"]) else 0,
             "volume_put":  int(atm_put["volume"])  if pd.notna(atm_put["volume"])  else 0,
-            "bid_call": float(atm_call["bid"]),
-            "ask_call": float(atm_call["ask"]),
-            "bid_put":  float(atm_put["bid"]),
-            "ask_put":  float(atm_put["ask"]),
+            "bid_call": bid_c,
+            "ask_call": ask_c,
+            "bid_put":  bid_p,
+            "ask_put":  ask_p,
+            "spread_pct_call": spread_pct_call,
+            "spread_pct_put":  spread_pct_put,
+            "liquidity_ok": liquidity_ok,
             "greeks_call": _bs_greeks(float(spot), strike, T, iv_call_pct, option_type="call"),
             "greeks_put":  _bs_greeks(float(spot), strike, T, iv_put_pct,  option_type="put"),
         })

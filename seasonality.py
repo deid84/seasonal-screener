@@ -75,6 +75,10 @@ def compute_monthly_seasonality(price_df: pd.DataFrame) -> pd.DataFrame:
 
     stats["p_value"] = monthly.groupby("month")["ret_pct"].apply(_pvalue)
 
+    # Sub-period consistency: same directional pattern in both halves of history
+    consistency = check_subperiod_consistency(price_df)
+    stats["consistency"] = consistency.reindex([MONTH_NAMES[m] for m in stats.index]).values
+
     # Benjamini-Hochberg FDR correction across all 12 simultaneous tests.
     # Prevents ~0.6 expected false positives at α=0.05 from the 12 t-tests.
     raw = stats["p_value"].values.astype(float)
@@ -84,6 +88,53 @@ def compute_monthly_seasonality(price_df: pd.DataFrame) -> pd.DataFrame:
     stats.index = [MONTH_NAMES[m] for m in stats.index]
     stats.index.name = "month"
     return stats.sort_values("avg_pct", ascending=False)
+
+
+def check_subperiod_consistency(price_df: pd.DataFrame) -> pd.Series:
+    """
+    Splits the history into two equal halves and checks whether each month's
+    directional pattern (avg sign + win_rate side) is consistent across both.
+
+    Returns a Series indexed by month name with values:
+      "consistent"   — same direction and win_rate > 50% in both halves
+      "mixed"        — direction or win_rate diverges between halves
+      "insufficient" — fewer than 2 observations in one half
+    """
+    df = price_df.copy()
+    df["year"] = df.index.year
+    df["month"] = df.index.month
+
+    monthly = df.groupby(["year", "month"])["Close"].agg(["first", "last"])
+    monthly["ret_pct"] = (monthly["last"] / monthly["first"] - 1) * 100
+    monthly = monthly.reset_index()
+
+    years = sorted(monthly["year"].unique())
+    mid = len(years) // 2
+    first_half_years  = set(years[:mid])
+    second_half_years = set(years[mid:])
+
+    results = {}
+    for month_num, name in MONTH_NAMES.items():
+        all_rows = monthly[monthly["month"] == month_num]["ret_pct"]
+        h1 = monthly[monthly["year"].isin(first_half_years)  & (monthly["month"] == month_num)]["ret_pct"]
+        h2 = monthly[monthly["year"].isin(second_half_years) & (monthly["month"] == month_num)]["ret_pct"]
+
+        if len(h1) < 2 or len(h2) < 2:
+            results[name] = "insufficient"
+            continue
+
+        dir1 = "pos" if h1.mean() > 0 else "neg"
+        dir2 = "pos" if h2.mean() > 0 else "neg"
+        wr1  = (h1 > 0).mean()
+        wr2  = (h2 > 0).mean()
+
+        # consistent: same direction and win_rate on the same side of 50% in both
+        if dir1 == dir2 and ((wr1 > 0.5 and wr2 > 0.5) or (wr1 <= 0.5 and wr2 <= 0.5)):
+            results[name] = "consistent"
+        else:
+            results[name] = "mixed"
+
+    return pd.Series(results)
 
 
 def best_and_worst_months(stats: pd.DataFrame, n: int = 3):
