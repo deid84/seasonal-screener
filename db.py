@@ -132,7 +132,9 @@ def load_latest_screening_run(db_path: str = DEFAULT_DB) -> list[dict]:
             return []
         rows = conn.execute(
             "SELECT ticker, score, result_json, run_ts FROM screening_results "
-            "WHERE run_date = ? ORDER BY score DESC",
+            "WHERE run_date = ? "
+            "GROUP BY ticker HAVING run_ts = MAX(run_ts) "
+            "ORDER BY score DESC",
             (latest_date,),
         ).fetchall()
         return [
